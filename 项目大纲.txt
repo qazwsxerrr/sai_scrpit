@@ -1,0 +1,280 @@
+
+
+# 项目目标
+
+实现一个可扩展的自动化框架，用于网页游戏的“日常动作”（签到/领奖/邮件/任务等）：
+
+* 本地可交互调试（有头模式、可回放 trace）
+* 会话持久化（storage_state）
+* 动作可插件化（“模板/任务”结构）
+* 可靠性：重试/限流/日志/失败留证
+* 后续一键迁移到云端（Docker + 定时）
+
+---
+
+# 技术选型
+
+* Python 3.11+
+* Playwright（chromium）
+* 配置：YAML/JSON
+* 日志：structlog 或标准 logging（JSON 格式）
+* 可选：APScheduler（本地定时）/ cron（云端定时）
+* 容器：Playwright 官方镜像或自行 Dockerfile
+
+---
+
+# 目录结构（建议）
+
+```
+seer-bot/
+  pyproject.toml or requirements.txt
+  README.md
+  config/
+    example.yaml
+  state/
+    <profile_name>/
+      storage_state.json
+  traces/
+  logs/
+  src/
+    bot/
+      __init__.py
+      cli.py
+      config.py
+      browser.py
+      session.py
+      actions/
+        __init__.py
+        base.py
+        dom_click.py
+        fetch_call.py
+        daily_claim.py   # 示例动作
+      runner.py
+      scheduler.py      # 可选
+      utils/
+        logging.py
+        retry.py
+        rate_limit.py
+        redact.py
+```
+
+---
+
+# 配置文件规范（config/example.yaml）
+
+Codex 需要实现配置解析与校验。
+
+```yaml
+profiles:
+  main:
+    start_url: "https://s.61.com/home/"
+    headless: false
+    slow_mo_ms: 0
+    timezone: "Asia/Shanghai"
+    viewport: { width: 1280, height: 720 }
+    user_agent: null
+
+tasks:
+  - name: "daily_claim"
+    profile: "main"
+    schedule: null         # 本地阶段先不启用；云端用 cron
+    params:
+      max_retries: 2
+      wait_after_nav_ms: 2000
+```
+
+---
+
+# CLI 需求（src/bot/cli.py）
+
+实现命令行入口（argparse 或 typer）：
+
+1. `bot init-session --profile main`
+
+* headless=false
+* 打开 start_url
+* 提示用户手动完成登录
+* 保存 `state/<profile>/storage_state.json`
+* 输出：成功/失败、文件路径
+
+2. `bot run --profile main --task daily_claim`
+
+* 加载 storage_state
+* 运行指定任务
+* 产出：结构化日志、trace.zip（可选开关）
+* 退出码：0 成功；非 0 失败
+
+3. `bot debug-network --profile main`
+
+* 加载 storage_state
+* 打开 start_url
+* 监听并打印 xhr/fetch 请求与响应 status（过滤噪音）
+* 用于人工点击时定位动作对应请求
+
+4. （可选）`bot schedule --profile main`
+
+* 读取 config 中 schedule 字段（cron 表达式）
+* APScheduler 本地执行（云端可不用）
+
+---
+
+# 会话与浏览器管理（browser.py / session.py）
+
+Codex 需要实现：
+
+* `create_context(profile, storage_state_path: Optional[str])`
+* 统一启用/关闭：
+
+  * tracing（可配置）
+  * video（可选）
+  * downloads（默认禁用）
+* `save_storage_state(profile)`：写到 `state/<profile>/storage_state.json`
+
+安全要求：
+
+* 日志中不得输出 storage_state 内容
+* 可提供 `redact` 工具：自动打码 token/cookie 字段（如遇到打印）
+
+---
+
+# Action 体系（actions/base.py）
+
+设计一个可扩展动作接口（插件化）：
+
+```python
+class ActionResult(BaseModel):
+    ok: bool
+    name: str
+    details: dict
+    evidence: dict  # trace_path, screenshot_path, etc.
+
+class Action(ABC):
+    name: str
+    async def run(self, page, params) -> ActionResult: ...
+```
+
+实现两类基础动作（可复用）：
+
+## A) DOMClickAction（dom_click.py）
+
+* 输入：locator selector（css/text/xpath）、可选 iframe selector
+* 行为：
+
+  * wait_for_selector
+  * click
+  * 可选：等待网络 idle / 等待某个元素出现
+* 返回：ok + 关键步骤耗时
+
+## B) FetchCallAction（fetch_call.py）
+
+* 输入：url（相对/绝对）、method、payload、headers（可选）
+* 行为：
+
+  * 使用 `page.evaluate()` 在浏览器上下文里执行 fetch
+  * `credentials: "include"`
+  * 返回：status、response_text（截断）、json（若可解析）
+* 注意：要限制日志输出，避免泄露敏感字段
+
+> 重点：FetchCallAction 不复刻浏览器外的签名/绕过逻辑，只在已登录的浏览器会话内发请求。
+
+---
+
+# 任务（模板）实现（actions/daily_claim.py）
+
+Codex 需实现一个示例任务 `daily_claim`，结构为“状态机骨架”，但不绑定具体游戏接口：
+
+* 步骤示例（占位）：
+
+  1. 导航到 start_url
+  2. 尝试通过 DOM 点击 “签到/领奖”入口（selector 由 config 提供）
+  3. 若 DOM 不可用，则执行 FetchCallAction（url/payload 由 config 提供）
+  4. 校验成功：通过出现的 toast/元素，或 fetch 返回结构（由 config 指定关键字段）
+* 所有步骤都写成可配置（selector、iframe、校验条件）
+
+配置示例（让 Codex 支持）：
+
+```yaml
+tasks:
+  - name: "daily_claim"
+    profile: "main"
+    params:
+      mode: "dom_first"   # dom_first | fetch_only
+      dom:
+        iframe: null
+        click_selector: "text=签到"
+        success_selector: "text=已签到"
+      fetch:
+        url: "/api/claim"
+        method: "POST"
+        payload: { type: "daily" }
+        success_json_path: "data.ok"
+```
+
+---
+
+# Runner（runner.py）
+
+Codex 需要实现统一执行器：
+
+* 输入：profile + task name + params
+* 输出：ActionResult（打印总结）
+* 功能：
+
+  * 全局超时（例如 120s）
+  * 重试：只对“可重试错误”重试（超时、临时网络、元素短暂找不到）
+  * 退避：指数退避 + jitter
+  * 限速：每个任务最少间隔（防止狂点）
+  * 证据：
+
+    * 失败截图 `logs/<date>/<task>_fail.png`
+    * trace `traces/<date>/<task>.zip`（可配置只在失败保存）
+
+---
+
+# 观测与日志
+
+Codex 实现：
+
+* JSON 日志：每一步 `step_start/step_end`
+* 统一字段：profile、task、step、elapsed_ms、attempt、ok、error_type
+* 日志落盘：`logs/YYYY-MM-DD/run.jsonl`
+* 对输出内容做截断（例如 response_text 只保留前 500 字符）
+
+---
+
+# 云端迁移（deliverables）
+
+Codex 需要附带：
+
+## Dockerfile（推荐基于 Playwright 官方镜像）
+
+* 拷贝代码、安装依赖
+* 默认命令：`bot run --profile main --task daily_claim`
+* volume 挂载建议：
+
+  * `/app/state`
+  * `/app/logs`
+  * `/app/traces`
+
+## 运行方式
+
+* 本地：
+
+  * `bot init-session --profile main`
+  * `bot run --profile main --task daily_claim`
+* 云端：
+
+  * 先在本地生成 `state/<profile>/storage_state.json` 上传到服务器
+  * docker run 挂载 state + logs + traces
+  * 用 cron 定时执行容器命令
+
+---
+
+# 验收标准（Codex 完成后你要能做的事）
+
+1. 本地能有头登录并生成 `storage_state.json`
+2. 能运行示例任务（即使只是占位逻辑，也要能执行框架）
+3. 失败时自动输出 trace/截图/日志
+4. 换成 headless 后仍可跑（在云端环境）
+5. 多 profile 支持（不同账号不同 state）
+
