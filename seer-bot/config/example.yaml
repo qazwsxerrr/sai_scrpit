@@ -1,0 +1,18 @@
+profiles:
+  main:
+    start_url: "https://s.61.com/home/"
+    headless: false
+    slow_mo_ms: 0
+    timezone: "Asia/Shanghai"
+    viewport:
+      width: 1280
+      height: 720
+    user_agent: null
+
+tasks:
+  - name: "daily_claim"
+    profile: "main"
+    schedule: null
+    params:
+      max_retries: 2
+      wait_after_nav_ms: 2000
