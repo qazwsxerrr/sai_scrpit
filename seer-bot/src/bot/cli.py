@@ -61,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     from bot.runner import run_task
     from bot.utils.logging import log_event, setup_logging
     from bot.utils.paths import ensure_profile_dirs, logs_dir
+    from bot.utils.paths import ensure_profile_dirs
     from bot.utils.paths import state_dir
 
     if hasattr(args, "profile"):
@@ -93,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         result = run_task(profile, task, log_level=args.log_level)
         print(f"run completed ok={result.ok}")
+        print(f"run stub for profile={args.profile} task={args.task}")
         return 0
     if args.command == "debug-network":
         print(f"debug-network stub for profile={args.profile}")
