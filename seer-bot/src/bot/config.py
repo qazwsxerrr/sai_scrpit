@@ -22,6 +22,7 @@ class TaskConfig(BaseModel):
     name: str
     profile: str
     schedule: str | None = None
+    trace: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
 
 

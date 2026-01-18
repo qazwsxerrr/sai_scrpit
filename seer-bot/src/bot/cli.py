@@ -17,6 +17,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="config/example.yaml",
         help="Path to configuration file (default: config/example.yaml)",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Logging level (default: INFO)",
+    )
 
     init_session = subparsers.add_parser(
         "init-session", help="Initialize a browser session for a profile."
@@ -53,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from bot.config import load_config, redact_config
     from bot.browser import close_context, create_context
+    from bot.runner import run_task
+    from bot.utils.logging import log_event, setup_logging
+    from bot.utils.paths import ensure_profile_dirs, logs_dir
     from bot.utils.paths import ensure_profile_dirs
     from bot.utils.paths import state_dir
 
@@ -60,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         ensure_profile_dirs(args.profile)
         config = load_config(Path(args.config))
         profile = config.get_profile(args.profile)
+        logger = setup_logging(logs_dir() / "run.jsonl", level=args.log_level)
+        log_event(logger, "command_start", profile=args.profile, step=args.command)
 
     if args.command == "init-session":
         session_profile = profile.model_copy(update={"headless": False})
@@ -77,6 +87,13 @@ def main(argv: list[str] | None = None) -> int:
             if context and browser and playwright:
                 close_context(playwright, browser, context)
     if args.command == "run":
+        task = config.get_task(args.task)
+        if task.profile != args.profile:
+            raise ValueError(
+                f"Task '{args.task}' is configured for profile '{task.profile}'"
+            )
+        result = run_task(profile, task, log_level=args.log_level)
+        print(f"run completed ok={result.ok}")
         print(f"run stub for profile={args.profile} task={args.task}")
         return 0
     if args.command == "debug-network":
