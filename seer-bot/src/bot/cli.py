@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 
@@ -31,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     debug_network.add_argument("--profile", required=True, help="Profile name")
 
+    smoke = subparsers.add_parser("smoke", help="Open start_url briefly and exit.")
+    smoke.add_argument("--profile", required=True, help="Profile name")
+
     print_config = subparsers.add_parser(
         "print-config", help="Print the resolved profile configuration."
     )
@@ -48,23 +52,48 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     from bot.config import load_config, redact_config
+    from bot.browser import close_context, create_context
     from bot.utils.paths import ensure_profile_dirs
+    from bot.utils.paths import state_dir
 
     if hasattr(args, "profile"):
         ensure_profile_dirs(args.profile)
+        config = load_config(Path(args.config))
+        profile = config.get_profile(args.profile)
 
     if args.command == "init-session":
-        print(f"init-session stub for profile={args.profile}")
-        return 0
+        session_profile = profile.model_copy(update={"headless": False})
+        playwright = browser = context = None
+        try:
+            playwright, browser, context = create_context(session_profile)
+            page = context.new_page()
+            page.goto(profile.start_url)
+            input("Please log in manually, then press Enter to continue...")
+            state_path = state_dir(args.profile) / "storage_state.json"
+            context.storage_state(path=str(state_path))
+            print(f"Storage state saved to {state_path}")
+            return 0
+        finally:
+            if context and browser and playwright:
+                close_context(playwright, browser, context)
     if args.command == "run":
         print(f"run stub for profile={args.profile} task={args.task}")
         return 0
     if args.command == "debug-network":
         print(f"debug-network stub for profile={args.profile}")
         return 0
+    if args.command == "smoke":
+        playwright = browser = context = None
+        try:
+            playwright, browser, context = create_context(profile)
+            page = context.new_page()
+            page.goto(profile.start_url)
+            time.sleep(3)
+            return 0
+        finally:
+            if context and browser and playwright:
+                close_context(playwright, browser, context)
     if args.command == "print-config":
-        config = load_config(Path(args.config))
-        profile = config.get_profile(args.profile)
         redacted = redact_config(profile.model_dump())
         print(json.dumps(redacted, ensure_ascii=False, indent=2))
         return 0
